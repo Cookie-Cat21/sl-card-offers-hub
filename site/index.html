@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sri Lanka Card Offers</title>
+<style>
+  :root {
+    --bg: #0b0d10; --panel: #14171c; --border: #262b33; --text: #e8eaed;
+    --muted: #9aa3af; --accent: #4f8cff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    padding: 24px 20px 16px; border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; background: var(--bg); z-index: 10;
+  }
+  h1 { margin: 0 0 4px; font-size: 22px; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .controls {
+    display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px;
+  }
+  input, select {
+    background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    padding: 8px 10px; border-radius: 8px; font-size: 14px;
+  }
+  input[type="search"] { flex: 1; min-width: 180px; }
+  main { padding: 16px 20px 60px; max-width: 1100px; margin: 0 auto; }
+  .grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 12px; margin-top: 16px;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 14px; display: flex; flex-direction: column; gap: 6px;
+  }
+  .card .bank {
+    display: inline-flex; align-self: flex-start; font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .04em; color: var(--accent);
+    background: rgba(79,140,255,.12); padding: 2px 8px; border-radius: 999px;
+  }
+  .card .title { font-size: 15px; font-weight: 600; line-height: 1.3; }
+  .card .desc { font-size: 13px; color: var(--muted); line-height: 1.4; }
+  .card .foot { font-size: 12px; color: var(--muted); margin-top: auto; padding-top: 6px; }
+  .empty { color: var(--muted); padding: 40px 0; text-align: center; }
+  footer { color: var(--muted); font-size: 12px; text-align: center; padding: 20px; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Sri Lanka Card Offers</h1>
+  <div class="meta" id="meta">Loading...</div>
+  <div class="controls">
+    <input type="search" id="q" placeholder="Search offers...">
+    <select id="bank"><option value="">All banks</option></select>
+  </div>
+</header>
+<main>
+  <div class="grid" id="grid"></div>
+  <div class="empty" id="empty" style="display:none">No offers match your filters.</div>
+</main>
+<footer>
+  Unofficial aggregator. Not affiliated with any bank. Data pulled weekly from each
+  bank's own public API — see the
+  <a href="https://github.com/Cookie-Cat21/sl-card-offers-hub">source repo</a> for
+  how each source is verified. Always confirm offer terms on the bank's own site
+  before relying on them.
+</footer>
+<script>
+fetch('offers.json').then(r => r.json()).then(data => {
+  const offers = data.offers;
+  document.getElementById('meta').textContent =
+    `${data.count} offers · generated ${new Date(data.generated_at).toLocaleString()}`;
+
+  const bankSel = document.getElementById('bank');
+  [...new Set(offers.map(o => o.bank))].sort().forEach(b => {
+    const opt = document.createElement('option');
+    opt.value = b; opt.textContent = b;
+    bankSel.appendChild(opt);
+  });
+
+  const grid = document.getElementById('grid');
+  const empty = document.getElementById('empty');
+
+  function esc(s) {
+    return (s || '').replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+  }
+
+  function render() {
+    const q = document.getElementById('q').value.toLowerCase();
+    const bank = bankSel.value;
+    const filtered = offers.filter(o =>
+      (!bank || o.bank === bank) &&
+      (!q || (o.title||'').toLowerCase().includes(q) || (o.description||'').toLowerCase().includes(q))
+    );
+    grid.innerHTML = '';
+    empty.style.display = filtered.length ? 'none' : 'block';
+    for (const o of filtered.slice(0, 300)) {
+      const el = document.createElement('div');
+      el.className = 'card';
+      const validTo = o.valid_to ? `Valid until ${esc(o.valid_to)}` : '';
+      const sourceLink = o.source_url
+        ? `· <a href="${esc(o.source_url)}" target="_blank" rel="noopener">source</a>`
+        : '';
+      el.innerHTML = `
+        <span class="bank">${esc(o.bank)}${o.card_type ? ' · ' + esc(o.card_type) : ''}</span>
+        <div class="title">${esc(o.title) || '(untitled)'}</div>
+        <div class="desc">${esc((o.description||'').slice(0,180))}</div>
+        <div class="foot">${validTo} ${sourceLink}</div>
+      `;
+      grid.appendChild(el);
+    }
+  }
+  document.getElementById('q').addEventListener('input', render);
+  bankSel.addEventListener('change', render);
+  render();
+}).catch(e => {
+  document.getElementById('meta').textContent = 'Failed to load offers.json: ' + e;
+});
+</script>
+</body>
+</html>
