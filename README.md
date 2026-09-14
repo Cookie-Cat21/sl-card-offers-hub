@@ -61,6 +61,28 @@ the initial push succeeded (real IP), the very next automated run wiped
 a `stale_sources` warning banner when this happens, so a viewer can see
 data is cached rather than assuming everything is current.
 
+**Manually refreshing a blocked source:** if `stale_sources` shows
+`combank_html` and/or `ntb_html` and you want current data sooner than
+"whenever GitHub's runner IPs fall off their blocklist," run the
+aggregator from your own machine/network (this is just you visiting
+the site like any other browser, not automation evading detection) and
+push the result:
+
+```bash
+git pull
+python3 scripts/aggregate.py   # refreshes data/offers.json — sources
+                                # blocked from your IP fall back same as
+                                # the workflow does, so this is safe to
+                                # run any time
+python3 scripts/build_site.py
+git add data/offers.json site/
+git commit -m "chore: manual refresh from local IP"
+git push
+```
+
+The next scheduled workflow run picks up wherever this leaves off —
+it's additive, not something you need to coordinate around.
+
 ### HTML scrapers
 
 `scripts/html_sources.py` has one `html.parser.HTMLParser` subclass per
