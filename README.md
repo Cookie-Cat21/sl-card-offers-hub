@@ -40,6 +40,27 @@ have missed silently:
   is dead — served an Incapsula error page, confirmed with a real browser
   too, not just a bot block. Real path is `/en/offers/supermarket-offers`.
 
+### Known issue: ComBank/NTB block GitHub Actions' IPs
+
+Both work fine run from a normal residential IP, but consistently return
+`403` when the weekly workflow runs them from a GitHub Actions runner
+(GitHub's runner IP ranges are commonly blocklisted by WAFs since they're
+a frequent source of scraping traffic) — this isn't a bug in the parser,
+it's an IP-based block on the runner itself. **Not working around it**
+with a proxy or spoofed origin — same call as the PABC/Sucuri decision:
+if a site blocks the automation's actual network, that's the site's
+call to make.
+
+To avoid the obvious failure mode this exposed — a blocked fetch
+silently overwriting good data with nothing — `aggregate.py` loads the
+previous run's `data/offers.json`, and any source that comes back empty
+falls back to its last-known-good offers instead of vanishing from the
+feed. This actually happened on this repo's very first scheduled run:
+the initial push succeeded (real IP), the very next automated run wiped
+190 ComBank/NTB offers before the fallback existed. The site now surfaces
+a `stale_sources` warning banner when this happens, so a viewer can see
+data is cached rather than assuming everything is current.
+
 ### HTML scrapers
 
 `scripts/html_sources.py` has one `html.parser.HTMLParser` subclass per

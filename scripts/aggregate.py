@@ -389,19 +389,56 @@ def fetch_amex() -> list[dict]:
     return offers
 
 
+SOURCES = ["sampath_api", "hnb_venus_api", "visa_perks_api",
+           "combank_html", "ntb_html", "amex_html"]
+FETCHERS = {
+    "sampath_api": fetch_sampath,
+    "hnb_venus_api": fetch_hnb,
+    "visa_perks_api": fetch_visa,
+    "combank_html": fetch_combank,
+    "ntb_html": fetch_ntb,
+    "amex_html": fetch_amex,
+}
+
+
+def load_previous_by_source() -> dict[str, list[dict]]:
+    """Load the last published feed, grouped by source, so a source that
+    fails this run (e.g. GitHub Actions' IP range getting WAF-blocked —
+    observed happening to ComBank/NTB even though the same code works fine
+    from a residential IP) falls back to its last-known-good data instead
+    of silently overwriting it with nothing. A prior version of this
+    script had exactly that bug: one failed fetch wiped out 190 real
+    offers from the published feed on the very first automated run."""
+    if not OUT.exists():
+        return {}
+    try:
+        prev = json.loads(OUT.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    by_source: dict[str, list[dict]] = {}
+    for o in prev.get("offers", []):
+        by_source.setdefault(o.get("source"), []).append(o)
+    return by_source
+
+
 def main() -> None:
-    print("Fetching Sampath...")
-    all_offers = fetch_sampath()
-    print("Fetching HNB...")
-    all_offers += fetch_hnb()
-    print("Fetching Visa...")
-    all_offers += fetch_visa()
-    print("Fetching ComBank...")
-    all_offers += fetch_combank()
-    print("Fetching NTB...")
-    all_offers += fetch_ntb()
-    print("Fetching Amex...")
-    all_offers += fetch_amex()
+    previous = load_previous_by_source()
+    all_offers: list[dict] = []
+    stale_sources: list[str] = []
+
+    for source in SOURCES:
+        print(f"Fetching {source}...")
+        fresh = FETCHERS[source]()
+        if fresh:
+            all_offers += fresh
+        elif previous.get(source):
+            print(f"  [{source}] fetch returned nothing — falling back to "
+                  f"{len(previous[source])} offers from the previous run "
+                  f"(fetched_at preserved, so staleness is visible downstream)")
+            all_offers += previous[source]
+            stale_sources.append(source)
+        else:
+            print(f"  [{source}] fetch returned nothing and there's no previous data to fall back to")
 
     seen: set[str] = set()
     deduped = []
@@ -414,13 +451,13 @@ def main() -> None:
     OUT.parent.mkdir(exist_ok=True)
     OUT.write_text(json.dumps({
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "sources": [
-            "sampath_api", "hnb_venus_api", "visa_perks_api",
-            "combank_html", "ntb_html", "amex_html",
-        ],
+        "sources": SOURCES,
+        "stale_sources": stale_sources,
         "count": len(deduped),
         "offers": deduped,
     }, indent=2, ensure_ascii=False), encoding="utf-8")
+    if stale_sources:
+        print(f"NOTE: {stale_sources} served from cached data this run, not freshly fetched")
     print(f"Wrote {len(deduped)} offers to {OUT}")
 
 

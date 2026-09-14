@@ -65,6 +65,7 @@ PAGE_TEMPLATE = """<!doctype html>
 <header>
   <h1>Sri Lanka Card Offers</h1>
   <div class="meta" id="meta">Loading...</div>
+  <div class="meta" id="stale" style="display:none; color:#e0a94f;"></div>
   <div class="controls">
     <input type="search" id="q" placeholder="Search offers...">
     <select id="bank"><option value="">All banks</option></select>
@@ -86,6 +87,12 @@ fetch('offers.json').then(r => r.json()).then(data => {
   const offers = data.offers;
   document.getElementById('meta').textContent =
     `${data.count} offers · generated ${new Date(data.generated_at).toLocaleString()}`;
+
+  if (data.stale_sources && data.stale_sources.length) {
+    const el = document.getElementById('stale');
+    el.style.display = 'block';
+    el.textContent = `⚠ ${data.stale_sources.join(', ')} couldn't be refreshed this run — showing last-known offers from those sources instead of dropping them.`;
+  }
 
   const bankSel = document.getElementById('bank');
   [...new Set(offers.map(o => o.bank))].sort().forEach(b => {
