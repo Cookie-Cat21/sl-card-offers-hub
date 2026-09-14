@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
-"""Pulls live card offers from verified Sri Lanka bank APIs and writes a
+"""Pulls live card offers from verified Sri Lanka bank sources and writes a
 single normalized, deduplicated feed to data/offers.json.
 
-Sources (v1 — all clean JSON APIs, no HTML scraping):
+JSON-API sources:
   - Sampath Bank card-promotions API (3 categories)
   - HNB Venus card-promo API (credit + debit, fully paginated)
   - Visa LK perks API (offers/promotions/benefits)
 
-Each source's request shape (headers, body, pagination) was reverse-engineered
-and verified live on 2026-09-14 — see the sibling *-docs repos under
-Cookie-Cat21 (sampath-api-docs, hnb-venus-api-docs, visa-lk-perks-api-docs)
-for the full research notes and catalog entries this script is based on.
+HTML-scraped sources (see scripts/html_sources.py):
+  - ComBank rewards-promotions page
+  - NTB (Nations Trust Bank) promotions hub
+  - Amex LK supermarket offers page
 
-Deliberately NOT included yet (needs real HTML-parsing work, not just a
-request fix): ComBank rewards-promotions, NTB promotions hub, Amex
-supermarket offers. PABC, StanChart/HSBC and MyPromo are excluded because
-those sources are dead, WAF-blocked, or ToS-blocked upstream — see
-pabc-card-offers-docs / sc-hsbc-offers-park-docs / mypromo-park-docs.
+Each source's request shape (headers, body, pagination, or HTML structure)
+was reverse-engineered and verified live on 2026-09-14 — see the sibling
+*-docs repos under Cookie-Cat21 (sampath-api-docs, hnb-venus-api-docs,
+visa-lk-perks-api-docs, combank-api-docs, ntb-amex-offers-docs) for the
+full research notes.
+
+PABC, StanChart/HSBC and MyPromo are excluded because those sources are
+dead, WAF-blocked, or ToS-blocked upstream — see pabc-card-offers-docs /
+sc-hsbc-offers-park-docs / mypromo-park-docs.
 """
 from __future__ import annotations
 
@@ -25,12 +29,16 @@ import hashlib
 import html
 import json
 import re
+import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from html_sources import AmexParser, ComBankParser, NtbParser  # noqa: E402
 
 
 def _cp1252_fallback(err: UnicodeDecodeError) -> tuple[str, int]:
@@ -86,6 +94,40 @@ def epoch_ms_to_iso(ms) -> str | None:
     try:
         return datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc).date().isoformat()
     except (ValueError, TypeError):
+        return None
+
+
+_MONTHS = {
+    m: i for i, m in enumerate(
+        ["january", "february", "march", "april", "may", "june", "july",
+         "august", "september", "october", "november", "december"], start=1
+    )
+}
+# Matches the last "<day><suffix>? <Month> <year>" in a free-form validity
+# string like "Valid on 2nd, 16th and 30th September 2026" or "Offer valid
+# till 30th September 2026" — takes the LAST match since these strings
+# often list several dates before the actual expiry date.
+_DATE_RE = re.compile(
+    r"(\d{1,2})(?:st|nd|rd|th)?\s+(" + "|".join(_MONTHS) + r")\s+(\d{4})",
+    re.IGNORECASE,
+)
+
+
+def extract_valid_to(text: str | None) -> str | None:
+    """Best-effort ISO date extraction from a free-form validity sentence.
+    HTML sources only ever give us prose like "Valid till 30th September
+    2026", not a structured field — this is inherently lossier than the
+    JSON sources' epoch timestamps, and deliberately returns None rather
+    than guessing when the text doesn't match a recognizable date."""
+    if not text:
+        return None
+    matches = list(_DATE_RE.finditer(text))
+    if not matches:
+        return None
+    day, month, year = matches[-1].groups()
+    try:
+        return datetime(int(year), _MONTHS[month.lower()], int(day)).date().isoformat()
+    except ValueError:
         return None
 
 
@@ -240,6 +282,113 @@ def fetch_visa() -> list[dict]:
     return offers
 
 
+def fetch_combank() -> list[dict]:
+    """ComBank rewards-promotions page — see html_sources.ComBankParser."""
+    status, text = fetch("https://www.combank.lk/rewards-promotions")
+    time.sleep(DELAY)
+    if status != 200:
+        print(f"  [combank] HTTP {status}")
+        return []
+    parser = ComBankParser()
+    parser.feed(text)
+    offers = []
+    for row in parser.offers:
+        if not row.get("title"):
+            continue
+        offers.append({
+            "id": make_id("combank", row["href"]),
+            "bank": "Commercial Bank",
+            "source": "combank_html",
+            "card_type": None,
+            "category": row.get("category") or None,
+            "title": row.get("title", "").strip(),
+            "description": row.get("valid", "").strip(),
+            "discount": row.get("discount", "").strip() or None,
+            "image_url": row.get("image"),
+            "valid_from": None,
+            "valid_to": extract_valid_to(row.get("valid")),
+            "source_url": row["href"] or "https://www.combank.lk/rewards-promotions",
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+        })
+    print(f"  [combank] {len(offers)} offers")
+    if len(offers) < 20:
+        print("  [combank] WARNING: unusually low count — page structure may have changed, check html_sources.ComBankParser")
+    return offers
+
+
+def fetch_ntb() -> list[dict]:
+    """NTB (Nations Trust Bank) promotions hub — see html_sources.NtbParser."""
+    status, text = fetch("https://www.nationstrust.com/promotions")
+    time.sleep(DELAY)
+    if status != 200:
+        print(f"  [ntb] HTTP {status}")
+        return []
+    parser = NtbParser()
+    parser.feed(text)
+    offers = []
+    for row in parser.offers:
+        if not row.get("title"):
+            continue
+        title = row.get("merchant", "").strip()
+        if row.get("title"):
+            title = f"{title} — {row['title'].strip()}" if title else row["title"].strip()
+        offers.append({
+            "id": make_id("ntb", row["href"] or row.get("title", "")),
+            "bank": "Nations Trust Bank",
+            "source": "ntb_html",
+            "card_type": None,
+            "category": row.get("category") or None,
+            "title": title,
+            "description": row.get("valid", "").strip(),
+            "discount": None,
+            "image_url": row.get("image"),
+            "valid_from": None,
+            "valid_to": extract_valid_to(row.get("valid")),
+            "source_url": row["href"] or "https://www.nationstrust.com/promotions",
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+        })
+    print(f"  [ntb] {len(offers)} offers")
+    if len(offers) < 30:
+        print("  [ntb] WARNING: unusually low count — page structure may have changed, check html_sources.NtbParser")
+    return offers
+
+
+def fetch_amex() -> list[dict]:
+    """Amex LK supermarket offers page — see html_sources.AmexParser.
+    Old catalog URL (/en-lk/benefits/consumer/supermarket-offers/) is dead
+    (Incapsula error page); real path is /en/offers/supermarket-offers."""
+    status, text = fetch("https://www.americanexpress.lk/en/offers/supermarket-offers")
+    time.sleep(DELAY)
+    if status != 200:
+        print(f"  [amex] HTTP {status}")
+        return []
+    parser = AmexParser()
+    parser.feed(text)
+    offers = []
+    for row in parser.offers:
+        if not row.get("title"):
+            continue
+        offers.append({
+            "id": make_id("amex", row["href"] or row.get("title", "")),
+            "bank": "Amex",
+            "source": "amex_html",
+            "card_type": None,
+            "category": "Supermarket",
+            "title": row.get("title", "").strip(),
+            "description": row.get("valid", "").strip(),
+            "discount": row.get("discount", "").strip() or None,
+            "image_url": row.get("image"),
+            "valid_from": None,
+            "valid_to": extract_valid_to(row.get("valid")),
+            "source_url": row["href"] or "https://www.americanexpress.lk/en/offers/supermarket-offers",
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+        })
+    print(f"  [amex] {len(offers)} offers")
+    if len(offers) < 2:
+        print("  [amex] WARNING: unusually low count — page structure may have changed, check html_sources.AmexParser")
+    return offers
+
+
 def main() -> None:
     print("Fetching Sampath...")
     all_offers = fetch_sampath()
@@ -247,6 +396,12 @@ def main() -> None:
     all_offers += fetch_hnb()
     print("Fetching Visa...")
     all_offers += fetch_visa()
+    print("Fetching ComBank...")
+    all_offers += fetch_combank()
+    print("Fetching NTB...")
+    all_offers += fetch_ntb()
+    print("Fetching Amex...")
+    all_offers += fetch_amex()
 
     seen: set[str] = set()
     deduped = []
@@ -259,7 +414,10 @@ def main() -> None:
     OUT.parent.mkdir(exist_ok=True)
     OUT.write_text(json.dumps({
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "sources": ["sampath_api", "hnb_venus_api", "visa_perks_api"],
+        "sources": [
+            "sampath_api", "hnb_venus_api", "visa_perks_api",
+            "combank_html", "ntb_html", "amex_html",
+        ],
         "count": len(deduped),
         "offers": deduped,
     }, indent=2, ensure_ascii=False), encoding="utf-8")
